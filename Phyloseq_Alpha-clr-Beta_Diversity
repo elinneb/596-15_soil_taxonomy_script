@@ -1,0 +1,201 @@
+
+
+################
+### Phyloseq ###
+################
+
+### Set working directory
+setwd("~/Desktop/596-15_diversity/")
+
+### Install phyloseq and ggplot2 in R
+
+if (!require("BiocManager", quietly = TRUE))
+  install.packages("BiocManager")
+BiocManager::install("phyloseq")
+
+install.packages("ggplot2")
+
+
+### Load Phyloseq and ggplot2
+library(phyloseq); packageVersion("phyloseq")
+library(ggplot2); packageVersion("ggplot2")
+
+theme_set(theme_bw())
+
+## Import merged metaphlan table
+otumat <- read.delim("\\Users\\Super\\OneDrive\\Documents\\Microbial Taxonomic Data Analysis\\Working Directory\\596_15_merged_metaphlan.txt", sep = "\t", row.names = 1, header = T, skip=1, stringsAsFactors=FALSE)
+
+## Import taxa table - made manually in excel
+taxmat <- read.delim("\\Users\\Super\\OneDrive\\Documents\\Microbial Taxonomic Data Analysis\\Working Directory\\taxa.txt", sep = "\t", header = T, stringsAsFactors=FALSE)
+
+
+## Convert rownames of OTU table into OTU1...OTU[rownumber]
+rownames(otumat) <- paste0("OTU", 1:nrow(otumat))
+rownames(taxmat) <- paste0("OTU", 1:nrow(taxmat))
+
+otumat <- as.matrix(otumat)
+taxmat <- as.matrix(taxmat)
+
+
+## Tell phyloseq how to combine them into a phyloseq object
+OTU = otu_table(otumat, taxa_are_rows = TRUE)
+TAX = tax_table(taxmat)
+OTU
+TAX
+
+### Construct sample data.frame
+totumat <- t(otumat)
+samples.out <- rownames(totumat)
+site <- samples.out
+dirt <- gsub('.{1}$', "", samples.out)
+
+samdf <- data.frame(Site=site, Soil_Type=dirt)
+rownames(samdf) <- samples.out
+
+
+ps <- phyloseq(otu_table(OTU, taxa_are_rows=TRUE), 
+               sample_data(samdf), 
+               tax_table(TAX))
+
+
+
+
+
+# Visualize Alpha-diversity by soil type:
+pdf("All Samples Alpha Diversity by Soil Type.pdf",width = 8, height = 7)
+plot_richness(ps, x="Soil_Type", measures=c("Shannon", "Simpson"), color="Site") +
+scale_color_viridis_d() +
+  scale_fill_viridis_d()
+dev.off()
+
+# Visualize Alpha-diversity by site:
+pdf("All Samples Alpha Diversity by Site.pdf",width = 8, height = 7)
+plot_richness(ps, x="Site", measures=c("Shannon", "Simpson"), color="Soil_Type")
+dev.off()
+
+# Install/Load Vegan
+install.packages(vegan)
+library(vegan)
+
+
+# Beta-Diversity
+# Transform data to proportions as appropriate for Bray-Curtis distances
+ps.prop <- transform_sample_counts(ps, function(otu) otu/sum(otu))
+ord.nmds.bray <- ordinate(ps.prop, method="NMDS", distance="bray")
+
+
+
+# Beta-diversity by soil type
+pdf("All Samples Beta Diversity by Soil Type.pdf",width = 8, height = 7)
+plot_ordination(ps.prop, ord.nmds.bray, color="Soil_Type", title="Bray NMDS") + 
+  stat_ellipse(type = "norm", linetype = 2) +
+  theme_bw()
+dev.off()
+
+#    Beta-Diversity
+#  Centered log ratio transformation
+#Replace zeros
+install.packages('zCompositions')
+library(zCompositions)
+otu_z <- cmultRepl(as.matrix(ps@otu_table), output = 'p-counts')
+
+#create clr function
+clr <- function(x) sweep(log(x), 1, rowMeans(log(x)), "-")
+
+#Transpose OTU tables
+otu_tx <- data.frame(t(clr(t(otu_z))))
+
+#To matrix
+otu_m <- as.matrix(t(otu_tx))
+
+#Make and extract NMDS scores
+nmds = metaMDS(otu_m, distance = "euclidean")
+nmds_scores = as.data.frame(nmds$points)
+
+###                                 STOP AND CHANGE BEFORE RUNNING
+nmds_scores$Soil_Type <- samdf$Soil_Type
+nmds_scores$Site <- samdf$Site
+nmds_scores$Samples <- samples.out
+colnames(nmds_scores) <- c("NMDS1", "NMDS2", "Soil_Type", "Site", "Samples")
+
+
+# Beta-diversity by Site
+plotted_d <- ggplot(data = nmds_scores) +
+  ggtitle("") +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  geom_mark_ellipse(aes(x=MDS1,y=MDS2,fill=Site,color=Site), expand = unit(0.5,"mm")) +
+  geom_point(aes(x=MDS1, y=MDS2, shape = Type, color = Site))
+
+#Beta diversity by Soil Type PLOT
+pdf("Beta Diversity for Urban Microbial Communities.pdf",width = 8, height = 7)
+ggplot(data = nmds_scores) +
+  ggtitle("") +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  geom_mark_ellipse(aes(x=NMDS1,y=NMDS2,fill=Soil_Type,color=Soil_Type), expand = unit(0.5,"mm")) +
+  geom_point(aes(x=NMDS1, y=NMDS2, shape = Soil_Type, color = Soil_Type)) +
+scale_color_viridis_d() +
+  scale_fill_viridis_d()
+dev.off()
+# # Beta-diversity by site
+# pdf("All Samples Beta Diversity by Site.pdf",width = 8, height = 7)
+# plot_ordination(ps.prop, ord.nmds.bray, color="Site", title="Bray NMDS") + 
+#   stat_ellipse(type = "norm", linetype = 2) +
+#   theme_bw()
+# dev.off()
+# 
+# 
+# 
+# # Bar Plots
+# top <- names(sort(taxa_sums(ps), decreasing=TRUE))[1:25]
+# ps.top <- transform_sample_counts(ps, function(OTU) OTU/sum(OTU))
+# ps.top <- prune_taxa(top, ps.top)
+# 
+# # change taxrank to look at different ones
+# taxrank <- "Genus"
+# 
+# pdf(file=paste("All Samples",taxrank,"Barplot.pdf"),width = 8, height = 7)
+# plot_bar(ps.top, x="Sample", fill=paste(taxrank)) + geom_bar(position="fill", stat="identity") + facet_wrap(~Soil_Type, scales="free_x")
+# dev.off()
+# 
+# 
+# # #Agglomerate to phylum-level and rename
+# # library(dplyr)
+# # ps_phylum <- phyloseq::tax_glom(ps, "Phylum")
+# # phyloseq::taxa_names(ps_phylum) <- phyloseq::tax_table(ps_phylum)[, "Phylum"]
+# # phyloseq::otu_table(ps_phylum)[1:5, 1:5]
+# # 
+# # #Melt and plot
+# # phyloseq::psmelt(ps_phylum) %>%
+# #   ggplot(data = ., aes(x = Soil_Type, y = Abundance)) +
+# #   geom_boxplot(outlier.shape  = NA) +
+# #   geom_jitter(aes(color = OTU), height = 0, width = .2) +
+# #   labs(x = "", y = "Abundance\n") +
+# #   facet_wrap(~ OTU, scales = "free")
+# 
+# 
+# ### Subset based on site (choose which subset you want to use, don't use both)
+# # Can change what you choose to subset by (what's in parentheses)
+# 
+# # By 1 site
+# site <- "C1"
+# samdf_SS <- subset(samdf, Site == paste(site))
+# 
+# # By 2 sites
+# site <- "C1"
+# site2 <- "C2"
+# samdf_SS <- subset(samdf, Site == paste(site) | Site == paste(site2))
+# 
+# 
+# 
+# ps_SS <- phyloseq(otu_table(seqtab.nochim, taxa_are_rows=FALSE), 
+#                   sample_data(samdf_SS), 
+#                   tax_table(taxa))
+# ps_SS
+# 
+# 
+# # Visualize Alpha-diversity by soil type:
+# pdf(file=paste(site,"Samples Alpha Diversity by Soil Type.pdf"),width = 8, height = 7)
+# plot_richness(ps_SS, x="Soil_Type", measures=c("Shannon", "Simpson"), color="Site")
+# dev.off()
+# 
+# 
