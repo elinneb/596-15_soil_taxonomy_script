@@ -1,0 +1,152 @@
+
+
+## Required dependencies: parallel, fastqc, multiqc, trimmomatic, metaphlan, [any dependencies in addition to/under metaphlan?]
+
+### FastQC and MultiQC raw reads, in parallel - assumes files are .fastq.gz suffix - adjust as needed
+
+# Run FastQC and MultiQC
+ls *.fastq.gz | parallel --gnu "fastqc {}"
+multiqc .
+
+
+## trim/filter all the fastq files, including removing the Illumina TruSeq adapters
+
+parallel --gnu "trimmomatic PE {1} {2} {1/.}_paired.fastq.gz {1/.}_unpaired.fastq.gz {2/.}_paired.fastq.gz {2/.}_unpaired.fastq.gz ILLUMINACLIP:TruSeq-PE.fa:2:30:10:8:true SLIDINGWINDOW:4:20" ::: *_R1_001.fastq.gz :::+ *_R2_001.fastq.gz
+
+
+
+### Move trimmed-paired files to new folder
+
+# Make new directory and move trimmed-paired files into that directory
+
+mkdir trimmed_paired_files
+mv *_paired.fastq.gz trimmed_paired_files
+cd /File/Path/to/trimmed_paired_files
+
+
+### FastQC and MultiQC on Trimmed files, in parallel - assumes trimmed-paired files are fastq.gz suffix - adjust as needed   
+
+# Run FastQC and MultiQC
+ls *.fastq.gz | parallel --gnu "fastqc {}"
+multiqc .
+
+
+
+### Classify clean reads using MetaPhlAn with [????] as reference database
+
+conda activate metaphlan
+
+while read p; do metaphlan /path/"$p"_R1_001.fastq_paired.fastq.gz,/path/"$p"_R2_001.fastq_paired.fastq.gz --bowtie2out /path/metaphlan/bowtie_out/"$p"_raw.bowtie2.bz2 --nproc 32 --bowtie2db ~/bowtie2db --input_type fastq -o /path/metaphlan/"$p"_metaphlan_raw.txt; done < /mnt/sdb/596-15_fastq_files/samples_all
+
+
+cd /mnt/sdb/596-15_fastq_files/metaphlan
+
+merge_metaphlan_tables.py /mnt/sdb/596-15_fastq_files/metaphlan/*_metaphlan_raw.txt > /mnt/sdb/596-15_fastq_files/metaphlan/596-15_merged_metaphlan.txt
+
+
+
+### Assemble filtered reads with MEGAHIT
+
+while read p; do megahit -1 /path/"$p"_R1_001.fastq_paired.fastq.gz -2 /path/"$p"_R2_001.fastq_paired.fastq.gz -o /path/megahit_output/"$p"_megahit; done < /path/samples_all
+
+
+
+
+####### FUNCTIONAL PROFILE PIPELINE #######
+
+### Gene prediction and annotation on assemblies
+
+
+### Prokka - got stuck on last step
+
+# tbl2asn is evil - cntrl+C when it gets stuck because we won't need .gbk output
+
+# run prokka code
+while read p; do prokka --metagenome --outdir /path/prokka_output/"$p"_prokka --prefix "$p" /path/megahit_output/"$p"_megahit/final.contigs.fa; done < /path/samples_all
+
+
+
+###### Metagenomics workshop links
+# https://metagenomics-workshop.readthedocs.io/en/2014-11-uppsala/functional-annotation/read_mapping.html
+# https://github.com/EnvGen/metagenomics-workshop/tree/master/reference_db
+
+
+## Subset prokka outputs that were given an enzyme identifiers - for use with MetaCyc and KEGG databases later
+
+while read p; do grep "eC_number=" /mnt/sdb/596-15_fastq_files/prokka_output/"$p"_prokka/"$p".gff | cut -f9 | cut -f1,2 -d ';'| sed 's/ID=//g'| sed 's/;eC_number=/\t/g' > /mnt/sdb/596-15_fastq_files/prokka_output/PROKKA."$p".ec; done < /mnt/sdb/596-15_fastq_files/samples_all
+
+
+## Subset prokka outputs that have Clusters of Orthologous Genes (COG) identifiers - for use with COG database later
+
+while read p; do egrep "COG[0-9]{4}" /path/prokka_output/"$p"_prokka/"$p".gff | cut -f9 | sed 's/.\+COG\([0-9]\+\);locus_tag=\(PROKKA_[0-9]\+\);.\+/\2\tCOG\1/g' > /path/prokka_output/PROKKA."$p".cog; done < /path/samples_all
+
+
+## Run MinPath 
+
+# For Metacyc
+while read p; do python ~/MinPath-master/MinPath.py -any /path/prokka_output/PROKKA."$p".ec -map ~/metagenomics-workshop/reference_db/metacyc/ec.to.pwy -report /path/prokka_output/PROKKA."$p".metacyc.minpath > /path/prokka_output/MinPath.metacyc."$p".log; done < /path/samples_all
+
+
+# For KEGG  
+while read p; do python ~/MinPath-master/MinPath.py -any /path/prokka_output/PROKKA."$p".ec -map ~/metagenomics-workshop/reference_db/kegg/ec.to.pwy -report /path/prokka_output/PROKKA."$p".kegg.minpath > /path/prokka_output/MinPath.KEGG."$p".log; done < /path/samples_all
+
+
+
+## Bowtie2 Alignment
+## dependecies: bowtie2 and samtools
+
+while read p; do bowtie2-build /path/megahit_output/"$p"_megahit/final.contigs.fa /path/megahit_output/"$p"_megahit/"$p"_contigs_db; done < /path/samples_all
+
+while read p; do bowtie2 --threads 32 -x /path/megahit_output/"$p"_megahit/"$p"_contigs_db -1 /path/"$p"_R1_paired.fastq.gz -2 /path/"$p"_R2_paired.fastq.gz --no-unal | samtools view -bS - | samtools sort -o - > /path/bowtie2_output/"$p"_contigs_aligned.bam; done < /path/samples_all
+
+cd /mnt/sdb/596-15_fastq_files/bowtie2_output/
+while read p; do samtools index "$p"_contigs_aligned.bam; done < /path/samples_all
+
+
+## remove dups with samtools
+
+while read p; do samtools rmdup /path/bowtie2_output/"$p"_contigs_aligned.bam /path/bowtie2_output/"$p"_contigs_remdup.bam; done < /path/samples_all
+
+
+
+
+## Calculate coverage
+
+# create bed file from prokka outputs
+while read p; do grep -v "#" /path/prokka_output/"$p"_prokka/"$p".gff | grep "ID=" | cut -f1 -d ';' | sed 's/ID=//g' | awk -v OFS='\t' '{print $1, $4-1, $5,$9}' > /path/prokka_output/"$p".map.bed; done < /path/samples_all
+
+
+# extract coverage information from bam files using prokka output in bed format
+
+while read p; do bedtools coverage -hist -a /path/prokka_output/"$p".map.bed -b /path/bowtie2_output/"$p"_contigs_remdup.bam > /path/bowtie2_output/"$p".map.hist; done < /path/samples_all
+
+
+# calculate the coverage for each gene
+
+while read p; do python ~/get_coverage_for_genes.py -i <(echo /path/bowtie2_output/"$p".map.hist) > /path/bowtie2_output/"$p".coverage; done < /path/samples_all
+
+
+
+
+## Produce the tabular output needed for KRONA.
+
+# For Metacyc pathways (from enzymes, only considering pathways predicted by MinPath):
+
+while read p; do python ~/genes.to.kronaTable.py -i /path/prokka_output/PROKKA."$p".ec -m ~/metagenomics-workshop/reference_db/metacyc/ec.to.pwy -H ~/metagenomics-workshop/reference_db/metacyc/pwy.hierarchy -n "$p" -l <(grep "minpath 1" /path/prokka_output/PROKKA."$p".metacyc.minpath) -c /path/bowtie2_output/"$p".coverage -o /path/krona_output/"$p".krona.metacyc.minpath.tab; done < /path/samples_all
+
+
+# For KEGG pathways (from enzymes, only considering pathways predicted by MinPath):
+
+while read p; do python ~/genes.to.kronaTable.py -i /path/prokka_output/PROKKA."$p".ec -m ~/metagenomics-workshop/reference_db/kegg/ec.to.pwy -H ~/metagenomics-workshop/reference_db/kegg/pwy.hierarchy -n "$p" -l <(grep "minpath 1" /path/prokka_output/PROKKA."$p".kegg.minpath) -c /path/bowtie2_output/"$p".coverage -o /path/krona_output/"$p".krona.kegg.minpath.tab; done < /path/samples_all
+
+
+
+## Generate krona html files
+
+# For Metacyc
+while read p; do ktImportText -o /path/krona_output/"$p".krona.metacyc.minpath.html /path/krona_output/"$p".krona.metacyc.minpath.tab; done < /path/samples_all
+
+
+
+# For KEGG
+while read p; do ktImportText -o /path/krona_output/"$p".krona.kegg.minpath.html /path/krona_output/"$p".krona.kegg.minpath.tab; done < /path/samples_all
